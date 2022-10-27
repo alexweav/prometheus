@@ -356,6 +356,8 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/alerts", wrapAgent(api.alerts))
 	r.Get("/rules", wrapAgent(api.rules))
 
+	r.Put("/rules/:namespace", wrapAgent(api.setRules))
+
 	// Admin APIs
 	r.Post("/admin/tsdb/delete_series", wrapAgent(api.deleteSeries))
 	r.Post("/admin/tsdb/clean_tombstones", wrapAgent(api.cleanTombstones))
@@ -1240,6 +1242,39 @@ type RecordingRule struct {
 	LastEvaluation time.Time        `json:"lastEvaluation"`
 	// Type of a recordingRule is always "recording".
 	Type string `json:"type"`
+}
+
+type RuleNamespace struct {
+	Name   string                `json:"name"`
+	Groups []RuleGroupDefinition `json:"groups"`
+}
+
+type RuleGroupDefinition struct {
+	Name     string         `json:"name"`
+	Interval float64        `json:"interval"`
+	Limit    int            `json:"limit"`
+	Rules    []CombinedRule `json:"rules"`
+}
+
+type CombinedRule struct {
+	Record      string            `json:"record,omitempty"`
+	Alert       string            `json:"alert,omitempty"`
+	Expr        string            `json:"expr"`
+	For         model.Duration    `json:"for,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+func (api *API) setRules(r *http.Request) apiFuncResult {
+	json := jsoniter.ConfigCompatibleWithStandardLibrary
+	var ns RuleNamespace
+	err := json.NewDecoder(r.Body).Decode(&ns)
+	if err != nil {
+		level.Error(api.logger).Log("msg", "error unmarshaling json body", "err", err)
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
+	}
+
+	return apiFuncResult{nil, nil, nil, nil}
 }
 
 func (api *API) rules(r *http.Request) apiFuncResult {
