@@ -32,7 +32,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/notifier"
@@ -1040,22 +1039,6 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 
 	return nil
 }
-
-// GroupLoader is responsible for loading rule groups from arbitrary sources and parsing them.
-type GroupLoader interface {
-	Load(identifier string) (*rulefmt.RuleGroups, []error)
-	Parse(query string) (parser.Expr, error)
-}
-
-// FileLoader is the default GroupLoader implementation. It defers to rulefmt.ParseFile
-// and parser.ParseExpr
-type FileLoader struct{}
-
-func (FileLoader) Load(identifier string) (*rulefmt.RuleGroups, []error) {
-	return rulefmt.ParseFile(identifier)
-}
-
-func (FileLoader) Parse(query string) (parser.Expr, error) { return parser.ParseExpr(query) }
 
 // LoadGroups reads groups from a list of files.
 func (m *Manager) LoadGroups(
