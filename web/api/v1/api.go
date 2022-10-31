@@ -1275,8 +1275,9 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
 	}
 
-	groups := make([]*rules.Group, len(ns.Groups))
-	for i, grp := range ns.Groups {
+	//groups := make([]*rules.Group, len(ns.Groups))
+	groups := make(map[string]*rules.Group, len(ns.Groups))
+	for _, grp := range ns.Groups {
 		opts := rules.GroupOptions{
 			Name:          grp.Name,
 			File:          ns.Name,
@@ -1325,7 +1326,7 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 			}
 		}
 
-		groups[i] = rules.NewGroup(opts)
+		groups[rules.GroupKey(ns.Name, grp.Name)] = rules.NewGroup(opts)
 	}
 
 	return apiFuncResult{nil, nil, nil, nil}
