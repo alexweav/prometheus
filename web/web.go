@@ -312,6 +312,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	factoryTr := func(_ context.Context) api_v1.TargetRetriever { return h.scrapeManager }
 	factoryAr := func(_ context.Context) api_v1.AlertmanagerRetriever { return h.notifier }
 	FactoryRr := func(_ context.Context) api_v1.RulesRetriever { return h.ruleManager }
+	factoryRl := func(_ context.Context) api_v1.RulesLoader { return h.ruleManager }
 
 	var app storage.Appendable
 	if o.EnableRemoteWriteReceiver {
@@ -336,6 +337,7 @@ func New(logger log.Logger, o *Options) *Handler {
 		h.options.EnableAdminAPI,
 		logger,
 		FactoryRr,
+		factoryRl,
 		h.options.RemoteReadSampleLimit,
 		h.options.RemoteReadConcurrencyLimit,
 		h.options.RemoteReadBytesInFrame,

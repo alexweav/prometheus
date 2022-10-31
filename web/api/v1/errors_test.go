@@ -124,6 +124,7 @@ func createPrometheusAPI(q storage.SampleAndChunkQueryable) *route.Router {
 		false, // Disable admin APIs.
 		log.NewNopLogger(),
 		func(context.Context) RulesRetriever { return &DummyRulesRetriever{} },
+		func(context.Context) RulesLoader { return &DummyRulesLoader{} },
 		0, 0, 0, // Remote read samples and concurrency limit.
 		false, // Not an agent.
 		regexp.MustCompile(".*"),
@@ -237,5 +238,11 @@ func (DummyRulesRetriever) RuleGroups() []*rules.Group {
 
 // AlertingRules implements RulesRetriever.
 func (DummyRulesRetriever) AlertingRules() []*rules.AlertingRule {
+	return nil
+}
+
+type DummyRulesLoader struct{}
+
+func (DummyRulesLoader) ReloadGroups(groups map[string]*rules.Group) error {
 	return nil
 }

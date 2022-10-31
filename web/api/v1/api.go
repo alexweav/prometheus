@@ -106,6 +106,11 @@ type RulesRetriever interface {
 	AlertingRules() []*rules.AlertingRule
 }
 
+// RulesLoader allows reloading of active rules.
+type RulesLoader interface {
+	ReloadGroups(groups map[string]*rules.Group) error
+}
+
 type StatsRenderer func(context.Context, *stats.Statistics, string) stats.QueryStats
 
 func defaultStatsRenderer(ctx context.Context, s *stats.Statistics, param string) stats.QueryStats {
@@ -182,6 +187,7 @@ type API struct {
 	targetRetriever       func(context.Context) TargetRetriever
 	alertmanagerRetriever func(context.Context) AlertmanagerRetriever
 	rulesRetriever        func(context.Context) RulesRetriever
+	rulesLoader           func(context.Context) RulesLoader
 	now                   func() time.Time
 	config                func() config.Config
 	flagsMap              map[string]string
@@ -227,6 +233,7 @@ func NewAPI(
 	enableAdmin bool,
 	logger log.Logger,
 	rr func(context.Context) RulesRetriever,
+	rl func(context.Context) RulesLoader,
 	remoteReadSampleLimit int,
 	remoteReadConcurrencyLimit int,
 	remoteReadMaxBytesInFrame int,
@@ -255,6 +262,7 @@ func NewAPI(
 		dbDir:            dbDir,
 		enableAdmin:      enableAdmin,
 		rulesRetriever:   rr,
+		rulesLoader:      rl,
 		logger:           logger,
 		CORSOrigin:       CORSOrigin,
 		runtimeInfo:      runtimeInfo,
@@ -1275,7 +1283,6 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
 	}
 
-	//groups := make([]*rules.Group, len(ns.Groups))
 	groups := make(map[string]*rules.Group, len(ns.Groups))
 	for _, grp := range ns.Groups {
 		opts := rules.GroupOptions{
