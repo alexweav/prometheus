@@ -1249,9 +1249,10 @@ type RuleNamespace struct {
 	Groups []RuleGroupDefinition `json:"groups"`
 }
 
+// TODO: Possibly migrate to rulefmt.Rule and combine with the YAML logic there.
 type RuleGroupDefinition struct {
 	Name     string         `json:"name"`
-	Interval float64        `json:"interval"`
+	Interval model.Duration `json:"interval"` // TODO: This or float64? Existing rules API returns a float64, confusingly.
 	Limit    int            `json:"limit"`
 	Rules    []CombinedRule `json:"rules"`
 }
@@ -1261,7 +1262,7 @@ type CombinedRule struct {
 	Alert       string            `json:"alert,omitempty"`
 	Expr        string            `json:"expr"`
 	For         model.Duration    `json:"for,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"` // TODO: labels.Labels ??
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
@@ -1272,6 +1273,57 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 	if err != nil {
 		level.Error(api.logger).Log("msg", "error unmarshaling json body", "err", err)
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
+	}
+
+	groups := make([]*rules.Group, len(ns.Groups))
+	for i, grp := range ns.Groups {
+		opts := rules.GroupOptions{
+			Name:          grp.Name,
+			File:          ns.Name,
+			Interval:      time.Duration(grp.Interval),
+			Limit:         grp.Limit,
+			Rules:         []rules.Rule{},
+			ShouldRestore: false, // TODO
+			Opts:          nil,   // TODO
+		}
+		for _, r := range grp.Rules {
+			if (r.Record != "" && r.Alert != "") || (r.Record == "" && r.Alert == "") {
+				return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("rule must contain either the record or alert field, but not both")}, nil, nil} // TODO: is there a shared error or common string that we can re-use? in rulefmt
+			}
+
+			if r.Expr == "" {
+				return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("field 'expr' must be set in rule")}, nil, nil}
+			}
+			expr, err := parser.ParseExpr(r.Expr)
+			if err != nil {
+				return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "could not parse expression")}, nil, nil}
+			}
+
+			if r.Record != "" {
+				rr := rules.NewRecordingRule(
+					r.Record,
+					expr,
+					labels.FromMap(r.Labels),
+				)
+				opts.Rules = append(opts.Rules, rr)
+			}
+			if r.Alert != "" {
+				ar := rules.NewAlertingRule(
+					r.Alert,
+					expr,
+					time.Duration(0), // TODO
+					labels.FromMap(r.Labels),
+					labels.FromMap(r.Annotations),
+					labels.Labels{},    // TODO,
+					"",                 // TODO
+					false,              // TODO,
+					log.NewNopLogger(), // TODO,
+				)
+				opts.Rules = append(opts.Rules, ar)
+			}
+		}
+
+		groups[i] = rules.NewGroup(opts)
 	}
 
 	return apiFuncResult{nil, nil, nil, nil}
