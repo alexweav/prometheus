@@ -37,6 +37,7 @@ import (
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
 	"golang.org/x/exp/slices"
+	"gopkg.in/yaml.v3"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/exemplar"
@@ -366,7 +367,7 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/alerts", wrapAgent(api.alerts))
 	r.Get("/rules", wrapAgent(api.rules))
 
-	r.Put("/rules/:namespace", wrapAgent(api.setRules))
+	r.Put("/rules/:file", wrapAgent(api.setRules))
 
 	// Admin APIs
 	r.Post("/admin/tsdb/delete_series", wrapAgent(api.deleteSeries))
@@ -1255,14 +1256,14 @@ type RecordingRule struct {
 }
 
 type RuleNamespace struct {
-	Name   string                `json:"name"`
+	Name   string                `json:"name"` // TODO: potentially drop this, as it's redundant with the URL parameter.
 	Groups []RuleGroupDefinition `json:"groups"`
 }
 
 // TODO: Possibly migrate to rulefmt.Rule and combine with the YAML logic there.
 type RuleGroupDefinition struct {
 	Name     string         `json:"name"`
-	Interval model.Duration `json:"interval"` // TODO: This or float64? Existing rules API returns a float64, confusingly.
+	Interval model.Duration `json:"interval"`
 	Limit    int            `json:"limit"`
 	Rules    []CombinedRule `json:"rules"`
 }
@@ -1272,11 +1273,14 @@ type CombinedRule struct {
 	Alert       string            `json:"alert,omitempty"`
 	Expr        string            `json:"expr"`
 	For         model.Duration    `json:"for,omitempty"`
-	Labels      map[string]string `json:"labels,omitempty"` // TODO: labels.Labels ??
+	Labels      map[string]string `json:"labels,omitempty"`
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 func (api *API) setRules(r *http.Request) apiFuncResult {
+	ctx := r.Context()
+	fn := route.Param(ctx, "file")
+
 	json := jsoniter.ConfigCompatibleWithStandardLibrary
 	var ns RuleNamespace
 	err := json.NewDecoder(r.Body).Decode(&ns)
@@ -1285,7 +1289,7 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
 	}
 
-	// TODO: Rule namespace should be taken from the URL parameter. If they do not match, prefer the URL parameter over the request body (or reject entirely).
+	ns.Name = fn
 
 	// TODO: reject if groups is nil/empty? or warn and accept? match config file behavior (likely accept and warn)
 
@@ -1296,14 +1300,11 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 			continue
 		}
 
-		opts := rules.GroupOptions{
-			Name:          grp.Name,
-			File:          ns.Name,
-			Interval:      time.Duration(grp.Interval),
-			Limit:         grp.Limit,
-			Rules:         []rules.Rule{},
-			ShouldRestore: false, // TODO
-			Opts:          nil,   // TODO
+		fmtGroup := rulefmt.RuleGroup{
+			Name:     grp.Name,
+			Interval: grp.Interval,
+			Limit:    grp.Limit,
+			Rules:    []rulefmt.RuleNode{},
 		}
 		for _, r := range grp.Rules {
 			// TODO: If we merge with the logic in model/rulefmt per above, we can drop this and use its Validate() instead.
@@ -1316,37 +1317,36 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 				return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("field 'expr' must be set in rule")}, nil, nil}
 			}
 
-			// TODO: The file-based implementation calls a Parse method on the rules loader. Why? Can we just use the main parser directly?
-			expr, err := parser.ParseExpr(r.Expr)
-			if err != nil {
-				return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "could not parse expression")}, nil, nil}
+			// TODO: hacks, remove once we merge things with rulefmt
+			record := yaml.Node{}
+			record.SetString(r.Record)
+			alert := yaml.Node{}
+			alert.SetString(r.Alert)
+			expr := yaml.Node{}
+			expr.SetString(r.Expr)
+			rn := rulefmt.RuleNode{
+				Record:      record,
+				Alert:       alert,
+				Expr:        expr,
+				For:         r.For,
+				Labels:      r.Labels,
+				Annotations: r.Annotations,
 			}
 
-			if r.Record != "" {
-				rr := rules.NewRecordingRule(
-					r.Record,
-					expr,
-					labels.FromMap(r.Labels),
-				)
-				opts.Rules = append(opts.Rules, rr)
-			}
-			if r.Alert != "" {
-				ar := rules.NewAlertingRule(
-					r.Alert,
-					expr,
-					time.Duration(0), // TODO
-					labels.FromMap(r.Labels),
-					labels.FromMap(r.Annotations),
-					labels.Labels{},    // TODO,
-					"",                 // TODO
-					false,              // TODO,
-					log.NewNopLogger(), // TODO,
-				)
-				opts.Rules = append(opts.Rules, ar)
-			}
+			fmtGroup.Rules = append(fmtGroup.Rules, rn)
 		}
 
-		groups[rules.GroupKey(ns.Name, grp.Name)] = rules.NewGroup(opts)
+		// TODO: In here we parse the query. The file-based implementation calls a Parse method on the rules loader. Why? Is it always going to be safe to use?
+		group, err := api.rulesLoader(context.Background()).NormalizeGroup(ns.Name, fmtGroup, 60*time.Second, labels.Labels{}, "TODO", nil)
+		if err != nil {
+			return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error building group")}, nil, nil}
+		}
+		groups[rules.GroupKey(ns.Name, grp.Name)] = group
+	}
+
+	err = api.rulesLoader(context.Background()).ReloadGroups(groups)
+	if err != nil {
+		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error reloading group")}, nil, nil}
 	}
 
 	return apiFuncResult{nil, nil, nil, nil}
