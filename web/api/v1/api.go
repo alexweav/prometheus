@@ -1287,6 +1287,8 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 			Opts:          nil,   // TODO
 		}
 		for _, r := range grp.Rules {
+			// TODO: If we merge with the logic in model/rulefmt per above, we can drop this and use its Validate() instead.
+			// TODO: Right now, we only implement a subset of the validation that's needed for simplicity.
 			if (r.Record != "" && r.Alert != "") || (r.Record == "" && r.Alert == "") {
 				return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("rule must contain either the record or alert field, but not both")}, nil, nil} // TODO: is there a shared error or common string that we can re-use? in rulefmt
 			}
