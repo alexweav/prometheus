@@ -1283,8 +1283,17 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 		return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "error unmarshaling json body")}, nil, nil}
 	}
 
+	// TODO: Rule namespace should be taken from the URL parameter. If they do not match, prefer the URL parameter over the request body (or reject entirely).
+
+	// TODO: reject if groups is nil/empty? or warn and accept? match config file behavior (likely accept and warn)
+
 	groups := make(map[string]*rules.Group, len(ns.Groups))
 	for _, grp := range ns.Groups {
+		if len(grp.Rules) < 1 {
+			// TODO: reject? or warn and accept? match config file behavior.
+			continue
+		}
+
 		opts := rules.GroupOptions{
 			Name:          grp.Name,
 			File:          ns.Name,
