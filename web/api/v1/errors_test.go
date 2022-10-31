@@ -31,6 +31,7 @@ import (
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/rules"
 	"github.com/prometheus/prometheus/scrape"
@@ -242,6 +243,10 @@ func (DummyRulesRetriever) AlertingRules() []*rules.AlertingRule {
 }
 
 type DummyRulesLoader struct{}
+
+func (DummyRulesLoader) NormalizeGroup(filename string, rg rulefmt.RuleGroup, defaultInterval time.Duration, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc rules.RuleGroupPostProcessFunc) (*rules.Group, error) {
+	return nil, nil
+}
 
 func (DummyRulesLoader) ReloadGroups(groups map[string]*rules.Group) error {
 	return nil

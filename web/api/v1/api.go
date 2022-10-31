@@ -42,6 +42,7 @@ import (
 	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/model/textparse"
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/promql"
@@ -108,6 +109,7 @@ type RulesRetriever interface {
 
 // RulesLoader allows reloading of active rules.
 type RulesLoader interface {
+	NormalizeGroup(filename string, rg rulefmt.RuleGroup, defaultInterval time.Duration, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc rules.RuleGroupPostProcessFunc) (*rules.Group, error)
 	ReloadGroups(groups map[string]*rules.Group) error
 }
 
@@ -1313,6 +1315,8 @@ func (api *API) setRules(r *http.Request) apiFuncResult {
 			if r.Expr == "" {
 				return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("field 'expr' must be set in rule")}, nil, nil}
 			}
+
+			// TODO: The file-based implementation calls a Parse method on the rules loader. Why? Can we just use the main parser directly?
 			expr, err := parser.ParseExpr(r.Expr)
 			if err != nil {
 				return apiFuncResult{nil, &apiError{errorBadData, errors.Wrap(err, "could not parse expression")}, nil, nil}

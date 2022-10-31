@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/model/rulefmt"
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/model/value"
 	"github.com/prometheus/prometheus/notifier"
@@ -1082,13 +1083,60 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 	return nil
 }
 
+func (m *Manager) NormalizeGroup(filename string, rg rulefmt.RuleGroup, defaultInterval time.Duration, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc RuleGroupPostProcessFunc) (*Group, error) {
+	shouldRestore := !m.restored
+
+	itv := defaultInterval
+	if rg.Interval != 0 {
+		itv = time.Duration(rg.Interval)
+	}
+
+	rules := make([]Rule, 0, len(rg.Rules))
+	for _, r := range rg.Rules {
+		expr, err := m.opts.GroupLoader.Parse(r.Expr.Value)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", filename, err)
+		}
+
+		if r.Alert.Value != "" {
+			rules = append(rules, NewAlertingRule(
+				r.Alert.Value,
+				expr,
+				time.Duration(r.For),
+				labels.FromMap(r.Labels),
+				labels.FromMap(r.Annotations),
+				externalLabels,
+				externalURL,
+				m.restored,
+				log.With(m.logger, "alert", r.Alert),
+			))
+			continue
+		}
+		rules = append(rules, NewRecordingRule(
+			r.Record.Value,
+			expr,
+			labels.FromMap(r.Labels),
+		))
+	}
+
+	return NewGroup(GroupOptions{
+		Name:                     rg.Name,
+		File:                     filename,
+		Interval:                 itv,
+		Limit:                    rg.Limit,
+		Rules:                    rules,
+		ShouldRestore:            shouldRestore,
+		Opts:                     m.opts,
+		done:                     m.done,
+		RuleGroupPostProcessFunc: ruleGroupPostProcessFunc,
+	}), nil
+}
+
 // LoadGroups reads groups from a list of files.
 func (m *Manager) LoadGroups(
 	interval time.Duration, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc RuleGroupPostProcessFunc, filenames ...string,
 ) (map[string]*Group, []error) {
 	groups := make(map[string]*Group)
-
-	shouldRestore := !m.restored
 
 	for _, fn := range filenames {
 		rgs, errs := m.opts.GroupLoader.Load(fn)
@@ -1097,50 +1145,11 @@ func (m *Manager) LoadGroups(
 		}
 
 		for _, rg := range rgs.Groups {
-			itv := interval
-			if rg.Interval != 0 {
-				itv = time.Duration(rg.Interval)
+			group, err := m.NormalizeGroup(fn, rg, interval, externalLabels, externalURL, ruleGroupPostProcessFunc)
+			if err != nil {
+				return nil, []error{err}
 			}
-
-			rules := make([]Rule, 0, len(rg.Rules))
-			for _, r := range rg.Rules {
-				expr, err := m.opts.GroupLoader.Parse(r.Expr.Value)
-				if err != nil {
-					return nil, []error{fmt.Errorf("%s: %w", fn, err)}
-				}
-
-				if r.Alert.Value != "" {
-					rules = append(rules, NewAlertingRule(
-						r.Alert.Value,
-						expr,
-						time.Duration(r.For),
-						labels.FromMap(r.Labels),
-						labels.FromMap(r.Annotations),
-						externalLabels,
-						externalURL,
-						m.restored,
-						log.With(m.logger, "alert", r.Alert),
-					))
-					continue
-				}
-				rules = append(rules, NewRecordingRule(
-					r.Record.Value,
-					expr,
-					labels.FromMap(r.Labels),
-				))
-			}
-
-			groups[GroupKey(fn, rg.Name)] = NewGroup(GroupOptions{
-				Name:                     rg.Name,
-				File:                     fn,
-				Interval:                 itv,
-				Limit:                    rg.Limit,
-				Rules:                    rules,
-				ShouldRestore:            shouldRestore,
-				Opts:                     m.opts,
-				done:                     m.done,
-				RuleGroupPostProcessFunc: ruleGroupPostProcessFunc,
-			})
+			groups[GroupKey(fn, rg.Name)] = group
 		}
 	}
 
