@@ -967,6 +967,48 @@ func (m *Manager) Stop() {
 	level.Info(m.logger).Log("msg", "Rule manager stopped")
 }
 
+func (m *Manager) ReloadGroups(groups map[string]*Group) error {
+	var wg sync.WaitGroup
+	for _, newg := range groups {
+		// If there is an old group with the same identifier,
+		// check if new group equals with the old group, if yes then skip it.
+		// If not equals, stop it and wait for it to finish the current iteration.
+		// Then copy it into the new group.
+		gn := GroupKey(newg.file, newg.name)
+		oldg, ok := m.groups[gn]
+		delete(m.groups, gn)
+
+		if ok && oldg.Equals(newg) {
+			groups[gn] = oldg
+			continue
+		}
+
+		wg.Add(1)
+		go func(newg *Group) {
+			if ok {
+				oldg.stop()
+				newg.CopyState(oldg)
+			}
+			wg.Done()
+			// Wait with starting evaluation until the rule manager
+			// is told to run. This is necessary to avoid running
+			// queries against a bootstrapping storage.
+			<-m.block
+			newg.run(m.opts.Context)
+		}(newg)
+	}
+
+	wg.Wait()
+
+	for _, g := range groups {
+		m.groups[GroupKey(g.file, g.name)] = g
+	}
+
+	// TODO: Delete groups that no longer exist from the file. May need to change the key to a double map?
+
+	return nil
+}
+
 // Update the rule manager's state as the config requires. If
 // loading the new rules failed the old rule set is restored.
 func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels, externalURL string, ruleGroupPostProcessFunc RuleGroupPostProcessFunc) error {
