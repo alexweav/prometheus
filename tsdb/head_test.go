@@ -914,6 +914,168 @@ func BenchmarkHead_Truncate(b *testing.B) {
 	}
 }
 
+func TestHead_TruncateAndAppendRace(t *testing.T) {
+	t.Run("when nothing was appended, GC will delete empty series", func(t *testing.T) {
+		h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
+		defer func() {
+			require.NoError(t, h.Close())
+		}()
+
+		h.initTime(0)
+
+		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
+
+		ret := h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+
+		_, _, _ = h.gc()
+
+		ret = h.series.getByID(s1.ref)
+		require.Nil(t, ret)
+	})
+
+	t.Run("series stays around if append and commit finishes and then GC happens", func(t *testing.T) {
+		h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
+		defer func() {
+			require.NoError(t, h.Close())
+		}()
+
+		h.initTime(0)
+
+		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
+
+		app := h.appender() // lowercase, make sure we're getting the real appender and not an initAppender.
+		_, err := app.Append(storage.SeriesRef(s1.ref), s1.labels(), 1, 1.0)
+		require.NoError(t, err)
+		err = app.Commit()
+		require.NoError(t, err)
+
+		ret := h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+
+		_, _, _ = h.gc()
+
+		ret = h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+		require.Equal(t, 1.0, ret.lastValue)
+	})
+
+	t.Run("dissected append", func(t *testing.T) {
+		h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
+		defer func() {
+			require.NoError(t, h.Close())
+		}()
+
+		h.initTime(0)
+
+		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
+
+		app := h.appender() // initialize the appender.
+
+		ts := int64(1)
+		v := float64(1.0)
+
+		// The below logic is taken from Append().
+		// It's just hand-repeating what Append() does internally. This test does the same thing as the previous test.
+		// This only exists to explain the story and show what is happening internally.
+		s := app.head.series.getByID(s1.ref)
+		require.NotNil(t, s)
+		s.Lock()
+		isOOO, delta, err := s.appendable(ts, v, app.headMaxt, app.minValidTime, app.oooTimeWindow)
+		require.False(t, isOOO)
+		require.Equal(t, int64(0), delta)
+		require.NoError(t, err)
+		if ts < app.mint {
+			app.mint = ts
+		}
+		if ts > app.maxt {
+			app.maxt = ts
+		}
+		app.samples = append(app.samples, record.RefSample{
+			Ref: s.ref,
+			T:   1,
+			V:   1.0,
+		})
+		app.sampleSeries = append(app.sampleSeries, s)
+		s.Unlock()
+		// end dissected Append()
+
+		err = app.Commit()
+		require.NoError(t, err)
+
+		ret := h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+
+		_, _, _ = h.gc()
+
+		ret = h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+		require.Equal(t, 1.0, ret.lastValue)
+	})
+
+	t.Run("append and GC from different goroutines", func(t *testing.T) {
+		h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
+		defer func() {
+			require.NoError(t, h.Close())
+		}()
+
+		h.initTime(0)
+
+		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
+
+		doGC := make(chan struct{})
+		doneWithGC := make(chan struct{})
+		go func() {
+			<-doGC
+			_, _, _ = h.gc()
+			doneWithGC <- struct{}{}
+		}()
+
+		app := h.appender() // initialize the appender.
+
+		ts := int64(1)
+		v := float64(1.0)
+
+		// This is the same as the above test, just manually doing what Append() does internally.
+		// This only exists to explain the story and show what is happening internally.
+		s := app.head.series.getByID(s1.ref)
+		require.NotNil(t, s)
+
+		// !! now let's GC inside the Append, after we pulled the memSeries and before we acquire locks !!
+		doGC <- struct{}{}
+		time.Sleep(100 * time.Millisecond) // wiggle room and make sure we preempt not sure if truly needed but eh
+		<-doneWithGC
+
+		// Remember this logic below is a copy of what Append() does for real. There is room for a GC to happen between series ref and lock acquire!
+		s.Lock()
+		isOOO, delta, err := s.appendable(ts, v, app.headMaxt, app.minValidTime, app.oooTimeWindow)
+		require.False(t, isOOO)
+		require.Equal(t, int64(0), delta)
+		require.NoError(t, err)
+		if ts < app.mint {
+			app.mint = ts
+		}
+		if ts > app.maxt {
+			app.maxt = ts
+		}
+		app.samples = append(app.samples, record.RefSample{
+			Ref: s.ref,
+			T:   1,
+			V:   1.0,
+		})
+		app.sampleSeries = append(app.sampleSeries, s)
+		s.Unlock()
+		// end dissected Append()
+
+		err = app.Commit()
+		require.NoError(t, err) // The append and commit all succeed. the TSDB says it's taken our sample...
+
+		ret := h.series.getByID(s1.ref)
+		require.NotNil(t, ret)               // :explode: the head says our series does not even exist!
+		require.Equal(t, 1.0, ret.lastValue) // :explode
+	})
+}
+
 func TestHead_Truncate(t *testing.T) {
 	h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
 	defer func() {
