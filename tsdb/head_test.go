@@ -1023,18 +1023,30 @@ func TestHead_TruncateAndAppendRace(t *testing.T) {
 
 		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
 
+		app := h.appender() // lowercase, make sure we're getting the real appender and not an initAppender.
+		_, err := app.Append(storage.SeriesRef(s1.ref), s1.labels(), 1, 1.0)
+		require.NoError(t, err)
+		err = app.Commit()
+		require.NoError(t, err)
+
 		doGC := make(chan struct{})
 		doneWithGC := make(chan struct{})
 		go func() {
 			<-doGC
-			_, _, _ = h.gc()
+			mint := h.MinTime()
+			maxt := rangeForTimestamp(mint, h.chunkRange.Load())
+			rh := NewRangeHeadWithIsolationDisabled(h, mint, maxt-1)
+			rh = rh
+			// h.WaitForAppendersOverlapping(rh.MaxTime())
+			// _, _, _ = h.gc()
+			h.Truncate(1000)
 			doneWithGC <- struct{}{}
 		}()
 
-		app := h.appender() // initialize the appender.
+		app = h.appender() // initialize the appender.
 
-		ts := int64(1)
-		v := float64(1.0)
+		ts := int64(1001)
+		v := float64(1001.0)
 
 		// This is the same as the above test, just manually doing what Append() does internally.
 		// This only exists to explain the story and show what is happening internally.
@@ -1060,8 +1072,8 @@ func TestHead_TruncateAndAppendRace(t *testing.T) {
 		}
 		app.samples = append(app.samples, record.RefSample{
 			Ref: s.ref,
-			T:   1,
-			V:   1.0,
+			T:   ts,
+			V:   v,
 		})
 		app.sampleSeries = append(app.sampleSeries, s)
 		s.Unlock()
@@ -1071,8 +1083,41 @@ func TestHead_TruncateAndAppendRace(t *testing.T) {
 		require.NoError(t, err) // The append and commit all succeed. the TSDB says it's taken our sample...
 
 		ret := h.series.getByID(s1.ref)
-		require.NotNil(t, ret)               // :explode: the head says our series does not even exist!
-		require.Equal(t, 1.0, ret.lastValue) // :explode
+		require.NotNil(t, ret)                  // :explode: the head says our series does not even exist!
+		require.Equal(t, 1001.0, ret.lastValue) // :explode
+	})
+
+	t.Run("blah", func(t *testing.T) {
+		h, _ := newTestHead(t, 1000, wlog.CompressionNone, false)
+		defer func() {
+			require.NoError(t, h.Close())
+		}()
+
+		h.initTime(0)
+
+		s1, _, _ := h.getOrCreate(1, labels.FromStrings("a", "1", "b", "1"))
+
+		app := h.appender() // lowercase, make sure we're getting the real appender and not an initAppender.
+		_, err := app.Append(storage.SeriesRef(s1.ref), s1.labels(), 1, 1.0)
+		require.NoError(t, err)
+		err = app.Commit()
+		require.NoError(t, err)
+
+		app = h.appender() // lowercase, make sure we're getting the real appender and not an initAppender.
+		_, err = app.Append(storage.SeriesRef(s1.ref), s1.labels(), 3, 3.0)
+		require.NoError(t, err)
+		h.Truncate(2)
+		err = app.Commit()
+		require.NoError(t, err)
+
+		ret := h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+
+		_, _, _ = h.gc()
+
+		ret = h.series.getByID(s1.ref)
+		require.NotNil(t, ret)
+		require.Equal(t, 3.0, ret.lastValue)
 	})
 }
 
